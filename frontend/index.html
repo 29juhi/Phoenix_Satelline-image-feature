@@ -1,0 +1,1548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phoenix — Fire Detection & Satellite Confirmation</title>
+    <meta name="description" content="Phoenix: AI-powered wildfire detection and satellite confirmation system using NASA FIRMS, Sentinel-2, and OSM context.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <!-- Leaflet for satellite map -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        :root {
+            --bg-0: #0a0c10;
+            --bg-1: #0f1117;
+            --bg-2: #161a22;
+            --bg-3: #1e232d;
+            --border: rgba(255,255,255,0.08);
+            --border-hover: rgba(255,255,255,0.15);
+            --text-primary: #f0f2f5;
+            --text-secondary: #8b93a4;
+            --text-muted: #555d6e;
+            --accent-orange: #ff6b35;
+            --accent-red: #ff3b30;
+            --accent-green: #30d158;
+            --accent-yellow: #ffd60a;
+            --accent-blue: #0a84ff;
+            --accent-purple: #bf5af2;
+            --consistent: #30d158;
+            --inconsistent: #ff3b30;
+            --uncertain: #ffd60a;
+            --gradient-fire: linear-gradient(135deg, #ff6b35 0%, #ff3b30 50%, #bf5af2 100%);
+            --gradient-card: linear-gradient(145deg, rgba(255,107,53,0.05) 0%, rgba(191,90,242,0.03) 100%);
+            --glow-fire: 0 0 40px rgba(255,107,53,0.15);
+            --glow-green: 0 0 20px rgba(48,209,88,0.2);
+            --radius-sm: 8px;
+            --radius-md: 12px;
+            --radius-lg: 20px;
+            --radius-xl: 28px;
+        }
+
+        *, *::before, *::after {
+            margin: 0; padding: 0; box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background-color: var(--bg-0);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+        }
+
+        /* ── Background texture ── */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background:
+                radial-gradient(ellipse 80% 50% at 20% -10%, rgba(255,107,53,0.08) 0%, transparent 60%),
+                radial-gradient(ellipse 60% 40% at 80% 110%, rgba(191,90,242,0.06) 0%, transparent 60%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        /* ─── NAV ─────────────────────────────────────── */
+        nav {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: rgba(10,12,16,0.85);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 32px;
+            height: 64px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .nav-logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.2rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+        }
+
+        .nav-logo .fire-icon {
+            font-size: 1.5rem;
+            filter: drop-shadow(0 0 8px rgba(255,107,53,0.7));
+            animation: flicker 3s ease-in-out infinite;
+        }
+
+        @keyframes flicker {
+            0%, 100% { filter: drop-shadow(0 0 8px rgba(255,107,53,0.7)); }
+            50% { filter: drop-shadow(0 0 14px rgba(255,107,53,1)); }
+        }
+
+        .nav-badge {
+            font-size: 0.65rem;
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 20px;
+            background: rgba(255,107,53,0.15);
+            border: 1px solid rgba(255,107,53,0.3);
+            color: var(--accent-orange);
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        .nav-spacer { flex: 1; }
+
+        .nav-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        .status-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--accent-green);
+            box-shadow: 0 0 6px rgba(48,209,88,0.6);
+            animation: pulse-dot 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* ─── MAIN LAYOUT ─────────────────────────────── */
+        main {
+            position: relative;
+            z-index: 1;
+            flex: 1;
+            max-width: 1200px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 40px 32px 80px;
+            display: grid;
+            grid-template-columns: 380px 1fr;
+            gap: 28px;
+            align-items: start;
+        }
+
+        @media (max-width: 900px) {
+            main { grid-template-columns: 1fr; padding: 24px 16px 60px; }
+        }
+
+        /* ─── SECTION CARDS ───────────────────────────── */
+        .card {
+            background: var(--bg-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+            transition: border-color 0.3s, box-shadow 0.3s;
+        }
+
+        .card:hover {
+            border-color: var(--border-hover);
+        }
+
+        .card-header {
+            padding: 20px 24px 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .card-title {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+        }
+
+        .card-body {
+            padding: 24px;
+        }
+
+        /* ─── INPUT FORM ──────────────────────────────── */
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        label {
+            display: block;
+            font-size: 0.78rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 11px 14px;
+            background: var(--bg-3);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 0.95rem;
+            transition: border-color 0.2s, box-shadow 0.2s;
+            outline: none;
+            appearance: none;
+        }
+
+        input:focus, select:focus {
+            border-color: var(--accent-orange);
+            box-shadow: 0 0 0 3px rgba(255,107,53,0.12);
+        }
+
+        input::placeholder { color: var(--text-muted); }
+
+        select option { background: var(--bg-2); }
+
+        .input-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        /* ─── PRESETS ─────────────────────────────────── */
+        .presets-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+            margin-bottom: 20px;
+        }
+
+        .preset-chip {
+            padding: 7px 12px;
+            background: var(--bg-3);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-align: center;
+        }
+
+        .preset-chip:hover {
+            background: rgba(255,107,53,0.08);
+            border-color: rgba(255,107,53,0.35);
+            color: var(--accent-orange);
+        }
+
+        /* ─── CONFIDENCE SLIDER ───────────────────────── */
+        .slider-wrap {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        input[type="range"] {
+            -webkit-appearance: none;
+            flex: 1;
+            height: 4px;
+            background: var(--bg-3);
+            border-radius: 2px;
+            border: none;
+            padding: 0;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--accent-orange);
+            box-shadow: 0 0 8px rgba(255,107,53,0.5);
+            cursor: pointer;
+        }
+
+        .slider-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            color: var(--accent-orange);
+            min-width: 38px;
+            text-align: right;
+        }
+
+        /* ─── BUTTONS ─────────────────────────────────── */
+        .btn-primary {
+            width: 100%;
+            padding: 13px;
+            background: var(--gradient-fire);
+            border: none;
+            border-radius: var(--radius-sm);
+            color: white;
+            font-family: inherit;
+            font-size: 0.95rem;
+            font-weight: 700;
+            cursor: pointer;
+            letter-spacing: 0.3px;
+            transition: all 0.2s;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn-primary::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(rgba(255,255,255,0.1), rgba(255,255,255,0));
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 24px rgba(255,107,53,0.4);
+        }
+
+        .btn-primary:active { transform: translateY(0); }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .btn-secondary {
+            width: 100%;
+            margin-top: 8px;
+            padding: 10px;
+            background: transparent;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            font-family: inherit;
+            font-size: 0.85rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-secondary:hover {
+            background: var(--bg-3);
+            border-color: var(--border-hover);
+            color: var(--text-primary);
+        }
+
+        /* ─── SPINNER ─────────────────────────────────── */
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+
+        /* ─── STATUS BAR ──────────────────────────────── */
+        .status-bar {
+            margin-top: 14px;
+            padding: 10px 14px;
+            border-radius: var(--radius-sm);
+            font-size: 0.85rem;
+            font-weight: 500;
+            display: none;
+        }
+
+        .status-bar.loading { display: block; background: rgba(10,132,255,0.1); border: 1px solid rgba(10,132,255,0.25); color: #5ac8fa; }
+        .status-bar.success { display: block; background: rgba(48,209,88,0.1); border: 1px solid rgba(48,209,88,0.25); color: var(--accent-green); }
+        .status-bar.error   { display: block; background: rgba(255,59,48,0.1);  border: 1px solid rgba(255,59,48,0.25);  color: #ff6961; }
+
+        /* ─── RESULTS PANEL ───────────────────────────── */
+        .results-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .empty-state {
+            background: var(--bg-2);
+            border: 1px dashed var(--border);
+            border-radius: var(--radius-lg);
+            padding: 80px 40px;
+            text-align: center;
+            color: var(--text-muted);
+        }
+
+        .empty-state-icon {
+            font-size: 3.5rem;
+            margin-bottom: 16px;
+            opacity: 0.4;
+        }
+
+        .empty-state-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: var(--text-secondary);
+        }
+
+        .empty-state-sub {
+            font-size: 0.875rem;
+        }
+
+        /* ─── INCIDENT HEADER ─────────────────────────── */
+        .incident-header {
+            background: var(--bg-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+        }
+
+        .incident-banner {
+            background: var(--gradient-card);
+            border-bottom: 1px solid var(--border);
+            padding: 20px 24px;
+            display: flex;
+            align-items: flex-start;
+            gap: 14px;
+        }
+
+        .incident-fire-icon {
+            font-size: 2.2rem;
+            flex-shrink: 0;
+            filter: drop-shadow(0 0 12px rgba(255,107,53,0.6));
+        }
+
+        .incident-title-block { flex: 1; }
+
+        .incident-label {
+            font-size: 0.72rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--accent-orange);
+            margin-bottom: 4px;
+        }
+
+        .incident-class {
+            font-size: 1.6rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            line-height: 1.1;
+        }
+
+        .incident-confidence {
+            margin-top: 4px;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+
+        .incident-confidence span {
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 600;
+            color: var(--accent-orange);
+        }
+
+        .incident-coords {
+            font-size: 0.75rem;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-muted);
+            margin-top: 6px;
+        }
+
+        /* ─── CONFIRMATION VERDICT ────────────────────── */
+        .verdict-section {
+            padding: 20px 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .verdict-badge {
+            padding: 8px 18px;
+            border-radius: 100px;
+            font-size: 0.85rem;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+
+        .verdict-badge.CONSISTENT {
+            background: rgba(48,209,88,0.12);
+            border: 1px solid rgba(48,209,88,0.35);
+            color: var(--consistent);
+            box-shadow: 0 0 16px rgba(48,209,88,0.15);
+        }
+
+        .verdict-badge.INCONSISTENT {
+            background: rgba(255,59,48,0.12);
+            border: 1px solid rgba(255,59,48,0.35);
+            color: var(--inconsistent);
+        }
+
+        .verdict-badge.UNCERTAIN {
+            background: rgba(255,214,10,0.12);
+            border: 1px solid rgba(255,214,10,0.35);
+            color: var(--uncertain);
+        }
+
+        .verdict-score-block { flex: 1; }
+
+        .score-label {
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+        }
+
+        .score-bar-wrap {
+            height: 6px;
+            background: var(--bg-3);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .score-bar-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.8s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        .score-bar-fill.high { background: var(--consistent); box-shadow: 0 0 8px rgba(48,209,88,0.5); }
+        .score-bar-fill.med  { background: var(--uncertain);  box-shadow: 0 0 8px rgba(255,214,10,0.5); }
+        .score-bar-fill.low  { background: var(--inconsistent); }
+
+        .score-number {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1.1rem;
+            font-weight: 700;
+            margin-top: 4px;
+        }
+
+        /* ─── EVIDENCE GRID ───────────────────────────── */
+        .evidence-section {
+            background: var(--bg-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+        }
+
+        .reasons-list {
+            padding: 4px 0;
+        }
+
+        .reason-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 12px 24px;
+            border-bottom: 1px solid var(--border);
+            animation: fadeIn 0.3s ease forwards;
+            opacity: 0;
+        }
+
+        .reason-item:last-child { border-bottom: none; }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .reason-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--accent-orange);
+            flex-shrink: 0;
+            margin-top: 6px;
+        }
+
+        .reason-text {
+            font-size: 0.875rem;
+            color: var(--text-primary);
+            line-height: 1.5;
+        }
+
+        /* ─── EVIDENCE METRICS ────────────────────────── */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1px;
+            background: var(--border);
+        }
+
+        .metric-cell {
+            background: var(--bg-2);
+            padding: 18px 20px;
+            text-align: center;
+        }
+
+        .metric-icon { font-size: 1.4rem; margin-bottom: 4px; }
+        .metric-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+        .metric-label {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 2px;
+        }
+
+        /* ─── LAND COVER BARS ─────────────────────────── */
+        .landcover-list { padding: 4px 0; }
+
+        .lc-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 24px;
+            border-bottom: 1px solid var(--border);
+        }
+        .lc-item:last-child { border-bottom: none; }
+
+        .lc-icon { font-size: 1rem; width: 20px; text-align: center; }
+        .lc-label { font-size: 0.82rem; color: var(--text-secondary); flex: 1; min-width: 80px; }
+        .lc-bar-wrap { flex: 2; height: 5px; background: var(--bg-3); border-radius: 3px; overflow: hidden; }
+        .lc-bar-fill { height: 100%; border-radius: 3px; transition: width 0.8s ease; }
+        .lc-pct {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            min-width: 36px;
+            text-align: right;
+        }
+
+        /* ─── SATELLITE INFO ──────────────────────────── */
+        .satellite-info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1px;
+            background: var(--border);
+        }
+
+        .sat-info-cell {
+            background: var(--bg-2);
+            padding: 16px 20px;
+        }
+
+        .sat-info-label {
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+        }
+
+        .sat-info-value {
+            font-size: 0.925rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .sat-info-value.mono {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.82rem;
+        }
+
+        /* ─── PIPELINE VISUAL ─────────────────────────── */
+        .pipeline-card {
+            background: var(--bg-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+        }
+
+        .pipeline-steps {
+            display: flex;
+            align-items: center;
+            padding: 18px 24px;
+            gap: 0;
+            overflow-x: auto;
+        }
+
+        .pipe-step {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 5px;
+            flex-shrink: 0;
+        }
+
+        .pipe-dot {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.9rem;
+            background: var(--bg-3);
+            border: 1px solid var(--border);
+            transition: all 0.3s;
+        }
+
+        .pipe-dot.active {
+            background: rgba(255,107,53,0.15);
+            border-color: rgba(255,107,53,0.5);
+            box-shadow: 0 0 10px rgba(255,107,53,0.3);
+        }
+
+        .pipe-dot.done {
+            background: rgba(48,209,88,0.15);
+            border-color: rgba(48,209,88,0.5);
+        }
+
+        .pipe-label {
+            font-size: 0.65rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            text-align: center;
+            max-width: 52px;
+        }
+
+        .pipe-arrow {
+            height: 1px;
+            width: 30px;
+            flex-shrink: 0;
+            margin-bottom: 18px;
+            background: var(--border);
+            position: relative;
+        }
+
+        .pipe-arrow::after {
+            content: '';
+            position: absolute;
+            right: -3px;
+            top: -3px;
+            width: 6px;
+            height: 6px;
+            border-right: 1px solid var(--border);
+            border-top: 1px solid var(--border);
+            transform: rotate(45deg);
+        }
+
+        .pipe-arrow.active {
+            background: rgba(255,107,53,0.4);
+        }
+        .pipe-arrow.active::after {
+            border-color: rgba(255,107,53,0.4);
+        }
+
+        /* ─── ANALYSIS TIMESTAMP ──────────────────────── */
+        .analysis-time {
+            padding: 12px 24px;
+            border-top: 1px solid var(--border);
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        /* ─── SATELLITE MAP ───────────────────────────── */
+        .map-card {
+            background: var(--bg-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+        }
+
+        #phoenixMap {
+            height: 320px;
+            width: 100%;
+            background: #0a0c10;
+        }
+
+        /* Override Leaflet dark mode attribution */
+        .leaflet-control-attribution {
+            background: rgba(10,12,16,0.8) !important;
+            color: var(--text-muted) !important;
+            font-size: 0.65rem !important;
+        }
+        .leaflet-control-attribution a { color: var(--text-muted) !important; }
+        .leaflet-control-zoom a {
+            background: var(--bg-2) !important;
+            color: var(--text-primary) !important;
+            border-color: var(--border) !important;
+        }
+        .leaflet-control-zoom a:hover {
+            background: var(--bg-3) !important;
+        }
+
+        .map-overlay-badge {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            z-index: 1000;
+            background: rgba(10,12,16,0.85);
+            backdrop-filter: blur(8px);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 6px 12px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        @keyframes ring-pulse {
+            0%   { transform: scale(1);   opacity: 0.8; }
+            70%  { transform: scale(2.5); opacity: 0; }
+            100% { transform: scale(2.5); opacity: 0; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ── Navigation ── -->
+<nav>
+    <div class="nav-logo">
+        <span class="fire-icon">🔥</span>
+        PHOENIX
+    </div>
+    <div class="nav-badge">Feature 12</div>
+    <div class="nav-spacer"></div>
+    <div class="nav-status" id="apiStatus">
+        <div class="status-dot"></div>
+        <span>Satellite Confirmation Engine</span>
+    </div>
+</nav>
+
+<!-- ── Main ── -->
+<main>
+
+    <!-- LEFT: Input Panel -->
+    <div style="display: flex; flex-direction: column; gap: 16px;">
+
+        <!-- Input Form -->
+        <div class="card">
+            <div class="card-header">
+                <span>📍</span>
+                <span class="card-title">Hotspot Parameters</span>
+            </div>
+            <div class="card-body">
+
+                <div style="margin-bottom: 16px;">
+                    <label>Quick Locations</label>
+                    <div class="presets-grid">
+                        <button class="preset-chip" onclick="usePreset('Delhi')">Delhi 🇮🇳</button>
+                        <button class="preset-chip" onclick="usePreset('Mumbai')">Mumbai 🇮🇳</button>
+                        <button class="preset-chip" onclick="usePreset('Punjab')">Punjab 🌾</button>
+                        <button class="preset-chip" onclick="usePreset('Amazon')">Amazon 🌿</button>
+                    </div>
+                </div>
+
+                <div class="input-row">
+                    <div class="form-group">
+                        <label for="latitude">Latitude</label>
+                        <input type="number" id="latitude" placeholder="28.6139" step="0.0001" min="-90" max="90">
+                    </div>
+                    <div class="form-group">
+                        <label for="longitude">Longitude</label>
+                        <input type="number" id="longitude" placeholder="77.2090" step="0.0001" min="-180" max="180">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="timestamp">Date &amp; Time</label>
+                    <input type="datetime-local" id="timestamp">
+                </div>
+
+                <div class="form-group">
+                    <label for="predicted_class">Predicted Fire Class</label>
+                    <select id="predicted_class">
+                        <option value="Industrial Fire">🏭 Industrial Fire</option>
+                        <option value="Gas Flare">🔥 Gas Flare</option>
+                        <option value="Agricultural Burn">🌾 Agricultural Burn</option>
+                        <option value="Wildfire">🌲 Wildfire</option>
+                        <option value="Mining">⛏️ Mining</option>
+                        <option value="Unknown">❓ Unknown</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="confidence">Classification Confidence</label>
+                    <div class="slider-wrap">
+                        <input type="range" id="confidence" min="0.1" max="1.0" step="0.01" value="0.87"
+                               oninput="document.getElementById('conf-val').textContent = (parseFloat(this.value)*100).toFixed(0) + '%'">
+                        <span class="slider-value" id="conf-val">87%</span>
+                    </div>
+                </div>
+
+                <button class="btn-primary" id="confirmBtn" onclick="runConfirmation()">
+                    🛰️ &nbsp;Run Phoenix Pipeline
+                </button>
+                <button class="btn-secondary" onclick="clearResults()">Clear Results</button>
+
+                <div class="status-bar" id="statusBar"></div>
+            </div>
+        </div>
+
+        <!-- Pipeline Visual -->
+        <div class="pipeline-card">
+            <div class="card-header">
+                <span>⚡</span>
+                <span class="card-title">Pipeline Status</span>
+            </div>
+            <div class="pipeline-steps" id="pipelineSteps">
+                <div class="pipe-step">
+                    <div class="pipe-dot" id="step-input">📍</div>
+                    <div class="pipe-label">Input</div>
+                </div>
+                <div class="pipe-arrow" id="arr-1"></div>
+                <div class="pipe-step">
+                    <div class="pipe-dot" id="step-sentinel">🛰️</div>
+                    <div class="pipe-label">Sentinel-2</div>
+                </div>
+                <div class="pipe-arrow" id="arr-2"></div>
+                <div class="pipe-step">
+                    <div class="pipe-dot" id="step-osm">🗺️</div>
+                    <div class="pipe-label">OSM</div>
+                </div>
+                <div class="pipe-arrow" id="arr-3"></div>
+                <div class="pipe-step">
+                    <div class="pipe-dot" id="step-landcover">🌍</div>
+                    <div class="pipe-label">Land Cover</div>
+                </div>
+                <div class="pipe-arrow" id="arr-4"></div>
+                <div class="pipe-step">
+                    <div class="pipe-dot" id="step-confirm">🧠</div>
+                    <div class="pipe-label">Confirm</div>
+                </div>
+                <div class="pipe-arrow" id="arr-5"></div>
+                <div class="pipe-step">
+                    <div class="pipe-dot" id="step-result">📊</div>
+                    <div class="pipe-label">Result</div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- RIGHT: Results Panel -->
+    <div class="results-panel" id="resultsPanel">
+
+        <!-- Empty State -->
+        <div class="empty-state" id="emptyState">
+            <div class="empty-state-icon">🛰️</div>
+            <div class="empty-state-title">No incident analysed yet</div>
+            <div class="empty-state-sub">Enter hotspot coordinates and run the Phoenix pipeline to see satellite confirmation results.</div>
+        </div>
+
+    </div>
+</main>
+
+<script>
+    const API_BASE = 'http://localhost:8000';
+
+    const PRESETS = {
+        'Delhi':  { lat: 28.6139, lon: 77.2090,   cls: 'Industrial Fire', conf: 0.87, ts: '2026-09-13T14:30' },
+        'Mumbai': { lat: 19.0760, lon: 72.8777,   cls: 'Gas Flare',       conf: 0.79, ts: '2026-09-13T14:30' },
+        'Punjab': { lat: 30.9010, lon: 75.8573,   cls: 'Agricultural Burn', conf: 0.82, ts: '2026-09-13T14:30' },
+        'Amazon': { lat: -3.4653, lon: -62.2159,  cls: 'Wildfire',        conf: 0.91, ts: '2026-09-13T14:30' },
+    };
+
+    function usePreset(name) {
+        const p = PRESETS[name];
+        if (!p) return;
+        document.getElementById('latitude').value = p.lat;
+        document.getElementById('longitude').value = p.lon;
+        document.getElementById('predicted_class').value = p.cls;
+        document.getElementById('confidence').value = p.conf;
+        document.getElementById('conf-val').textContent = Math.round(p.conf * 100) + '%';
+        document.getElementById('timestamp').value = p.ts;
+    }
+
+    function setStatus(msg, type) {
+        const bar = document.getElementById('statusBar');
+        bar.className = 'status-bar ' + type;
+        bar.innerHTML = msg;
+    }
+
+    function clearResults() {
+        // Destroy map so it re-initialises on next run
+        if (_map) { _map.remove(); _map = null; _marker = null; _pulseMarker = null; _currentTile = null; }
+        document.getElementById('resultsPanel').innerHTML =
+            `<div class="empty-state" id="emptyState">
+                <div class="empty-state-icon">🛰️</div>
+                <div class="empty-state-title">No incident analysed yet</div>
+                <div class="empty-state-sub">Enter hotspot coordinates and run the Phoenix pipeline to see satellite confirmation results.</div>
+            </div>`;
+        document.getElementById('statusBar').className = 'status-bar';
+        resetPipeline();
+    }
+
+    function resetPipeline() {
+        ['step-input','step-sentinel','step-osm','step-landcover','step-confirm','step-result'].forEach(id => {
+            document.getElementById(id).className = 'pipe-dot';
+        });
+        ['arr-1','arr-2','arr-3','arr-4','arr-5'].forEach(id => {
+            document.getElementById(id).className = 'pipe-arrow';
+        });
+    }
+
+    function activatePipeStep(stepId, arrId) {
+        const stepEl = document.getElementById(stepId);
+        if (stepEl) stepEl.className = 'pipe-dot active';
+        if (arrId) {
+            const arrEl = document.getElementById(arrId);
+            if (arrEl) arrEl.className = 'pipe-arrow active';
+        }
+    }
+
+    function donePipeStep(stepId) {
+        const stepEl = document.getElementById(stepId);
+        if (stepEl) stepEl.className = 'pipe-dot done';
+    }
+
+    async function animatePipeline() {
+        const steps = [
+            ['step-input', null],
+            ['step-sentinel', 'arr-1'],
+            ['step-osm', 'arr-2'],
+            ['step-landcover', 'arr-3'],
+            ['step-confirm', 'arr-4'],
+            ['step-result', 'arr-5'],
+        ];
+        for (let i = 0; i < steps.length; i++) {
+            const [sid, aid] = steps[i];
+            if (i > 0) donePipeStep(steps[i-1][0]);
+            activatePipeStep(sid, aid);
+            await delay(380);
+        }
+        donePipeStep('step-result');
+    }
+
+    function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    async function runConfirmation() {
+        const lat = parseFloat(document.getElementById('latitude').value);
+        const lon = parseFloat(document.getElementById('longitude').value);
+        const ts  = document.getElementById('timestamp').value;
+        const cls = document.getElementById('predicted_class').value;
+        const conf = parseFloat(document.getElementById('confidence').value);
+
+        if (!lat || !lon || !ts) {
+            setStatus('Please fill in latitude, longitude, and date.', 'error');
+            return;
+        }
+
+        const btn = document.getElementById('confirmBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span>Running pipeline…';
+        setStatus('<span class="spinner"></span>Connecting to Phoenix backend…', 'loading');
+        resetPipeline();
+
+        // Animate pipeline in parallel
+        animatePipeline();
+
+        const isoTs = new Date(ts).toISOString();
+
+        const body = {
+            latitude: lat,
+            longitude: lon,
+            timestamp: isoTs,
+            predicted_class: cls,
+            classification_confidence: conf,
+        };
+
+        try {
+            setStatus('<span class="spinner"></span>Running Sentinel-2 + OSM + Land Cover…', 'loading');
+            const resp = await fetch(`${API_BASE}/api/satellite/confirm`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+
+            const data = await resp.json();
+
+            if (!resp.ok) {
+                throw new Error(data.detail || `HTTP ${resp.status}`);
+            }
+
+            await delay(200);
+            renderResults(data, lat, lon);
+            // Init map after DOM update
+            setTimeout(() => initOrUpdateMap(lat, lon, data.confirmation), 80);
+            setStatus('✓ Pipeline complete — confirmation verdict ready', 'success');
+
+        } catch (err) {
+            // Fallback: if backend is offline, render demo data
+            console.warn('Backend unavailable, using demo mode:', err.message);
+            setStatus(`Backend offline — showing demo output (${err.message})`, 'error');
+            await delay(2500);
+            const demoData = buildDemoResponse(lat, lon, cls, conf, isoTs);
+            renderResults(demoData, lat, lon, true);
+            setTimeout(() => initOrUpdateMap(lat, lon, demoData.confirmation), 80);
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '🛰️ &nbsp;Run Phoenix Pipeline';
+        }
+    }
+
+    function buildDemoResponse(lat, lon, cls, conf, ts) {
+        const demos = {
+            'Industrial Fire': {
+                status: 'CONSISTENT', score: 100, cloud: 8.0,
+                facilities: [{ type: 'industrial', name: 'Bharat Petroleum Refinery', distance_m: 243 }],
+                lc: { built_up: 74, cropland: 4, vegetation: 8, bare: 14, water: 0 },
+                reasons: [
+                    'Satellite image available with acceptable cloud coverage (8.0%)',
+                    'Industrial facility (Bharat Petroleum Refinery) located 243m from hotspot, consistent with industrial fire',
+                    'Built-up/industrial land dominates the surrounding area (74.0%), consistent with industrial fire',
+                ],
+                acq: '2026-09-11T05:30:00Z',
+            },
+            'Gas Flare': {
+                status: 'CONSISTENT', score: 95, cloud: 12.0,
+                facilities: [{ type: 'refinery', name: 'ONGC Gas Plant', distance_m: 180 }],
+                lc: { built_up: 55, cropland: 5, vegetation: 10, bare: 30, water: 0 },
+                reasons: [
+                    'Satellite image available with acceptable cloud coverage (12.0%)',
+                    'Oil/gas or refinery facility (ONGC Gas Plant) located 180m from hotspot, consistent with gas flaring',
+                    'Industrial built-up (55.0%) or cleared ground context consistent with gas flare site',
+                ],
+                acq: '2026-09-11T05:30:00Z',
+            },
+            'Agricultural Burn': {
+                status: 'CONSISTENT', score: 90, cloud: 15.0,
+                facilities: [],
+                lc: { built_up: 5, cropland: 80, vegetation: 10, bare: 5, water: 0 },
+                reasons: [
+                    'Satellite image available with acceptable cloud coverage (15.0%)',
+                    'Cropland dominates the surrounding area (80.0%), consistent with agricultural burn',
+                    'No industrial facility detected within 500m buffer',
+                ],
+                acq: '2026-09-11T05:30:00Z',
+            },
+            'Wildfire': {
+                status: 'CONSISTENT', score: 95, cloud: 3.0,
+                facilities: [],
+                lc: { built_up: 3, cropland: 5, vegetation: 88, bare: 4, water: 0 },
+                reasons: [
+                    'Satellite image available with acceptable cloud coverage (3.0%)',
+                    'Forest/vegetation dominates the surrounding area (88.0%), consistent with wildfire',
+                    'No industrial facility detected within 500m buffer',
+                ],
+                acq: '2026-09-11T05:30:00Z',
+            },
+            'Mining': {
+                status: 'UNCERTAIN', score: 55, cloud: 22.0,
+                facilities: [],
+                lc: { built_up: 15, cropland: 10, vegetation: 20, bare: 55, water: 0 },
+                reasons: [
+                    'No mining or quarry facility detected within 1000m buffer',
+                    'High percentage of bare/excavated ground (55.0%) consistent with mining operations',
+                ],
+                acq: '2026-09-10T06:00:00Z',
+            },
+            'Unknown': {
+                status: 'UNCERTAIN', score: 50, cloud: null,
+                facilities: [],
+                lc: { built_up: 25, cropland: 25, vegetation: 25, bare: 25, water: 0 },
+                reasons: [
+                    'Satellite optical imagery currently unavailable; confirmation relies on OSM and land-cover context',
+                    'Initial fire classification is Unknown or uncertain; physical consistency cannot be established',
+                ],
+                acq: null,
+            },
+        };
+
+        const d = demos[cls] || demos['Unknown'];
+        return {
+            latitude: lat, longitude: lon,
+            predicted_class: cls,
+            classification_confidence: conf,
+            confirmation: d.status,
+            confirmation_score: d.score,
+            reasons: d.reasons,
+            nearby_facilities: d.facilities,
+            landcover_summary: d.lc,
+            acquisition_date: d.acq,
+            cloud_coverage: d.cloud,
+            image_url: d.acq ? `s3://copernicus-tiles/sentinel-2/S2A_MSIL2A_${d.acq.slice(0,10).replace(/-/g,'')}.tif` : null,
+            analysis_timestamp: new Date().toISOString(),
+            evidence: {},
+        };
+    }
+
+    function verdictIcon(status) {
+        return status === 'CONSISTENT' ? '✓' : status === 'INCONSISTENT' ? '✗' : '?';
+    }
+
+    function scoreClass(score) {
+        if (score >= 65) return 'high';
+        if (score >= 40) return 'med';
+        return 'low';
+    }
+
+    const LC_META = {
+        built_up:   { icon: '🏙️', label: 'Built-up / Industrial', color: '#5ac8fa' },
+        cropland:   { icon: '🌾', label: 'Cropland',               color: '#ffd60a' },
+        vegetation: { icon: '🌲', label: 'Forest / Vegetation',    color: '#30d158' },
+        bare:       { icon: '🪨', label: 'Bare Land',              color: '#98989d' },
+        water:      { icon: '💧', label: 'Water',                  color: '#0a84ff' },
+    };
+
+    function renderResults(data, lat, lon, isDemo = false) {
+        const status = data.confirmation;
+        const score  = parseFloat(data.confirmation_score);
+        const conf   = parseFloat(data.classification_confidence);
+        const lc     = data.landcover_summary || {};
+        const facs   = data.nearby_facilities || [];
+        const reasons = data.reasons || [];
+
+        const acqDate = data.acquisition_date ? new Date(data.acquisition_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : 'N/A';
+        const analysisTime = data.analysis_timestamp ? new Date(data.analysis_timestamp).toLocaleString() : '';
+
+        // Map tile layer labels
+        const tileLabels = {
+            esri:   '🛰️ ESRI Satellite',
+            osm:    '🗺️ Street Map',
+            topo:   '🏔️ Topographic',
+        };
+
+        const lcRows = Object.entries(LC_META).map(([key, meta]) => {
+            const pct = parseFloat(lc[key] || 0);
+            return `
+                <div class="lc-item">
+                    <span class="lc-icon">${meta.icon}</span>
+                    <span class="lc-label">${meta.label}</span>
+                    <div class="lc-bar-wrap">
+                        <div class="lc-bar-fill" style="width: ${pct}%; background: ${meta.color}; opacity: 0.8;"></div>
+                    </div>
+                    <span class="lc-pct">${pct.toFixed(0)}%</span>
+                </div>`;
+        }).join('');
+
+        const reasonsHtml = reasons.map((r, i) => `
+            <div class="reason-item" style="animation-delay: ${i * 0.07}s">
+                <div class="reason-dot"></div>
+                <div class="reason-text">${r}</div>
+            </div>`).join('');
+
+        const facilityText = facs.length > 0
+            ? `${facs[0].name || 'Facility'} — ${Math.round(facs[0].distance_m || 0)}m`
+            : 'None within search radius';
+
+        const cloudText = data.cloud_coverage != null ? `${parseFloat(data.cloud_coverage).toFixed(0)}%` : 'N/A';
+        const imageRef = data.image_url ? data.image_url.split('/').pop().split('.')[0].slice(0, 30) + '…' : 'N/A';
+
+        const demoWarning = isDemo ? `
+            <div style="padding: 8px 16px; background: rgba(255,214,10,0.08); border: 1px solid rgba(255,214,10,0.25); border-radius: 8px; font-size: 0.78rem; color: var(--uncertain);">
+                ⚠️ Demo mode — backend offline. Showing synthetic results for <strong>${data.predicted_class}</strong>.
+            </div>` : '';
+
+        document.getElementById('resultsPanel').innerHTML = `
+            ${demoWarning}
+
+            <!-- Satellite Map -->
+            <div class="map-card">
+                <div class="card-header">
+                    <span>🛰️</span>
+                    <span class="card-title">Satellite View</span>
+                    <div style="margin-left: auto; display: flex; gap: 6px;">
+                        <button onclick="switchTile('esri')"   style="padding: 4px 10px; font-size: 0.72rem; background: var(--bg-3); border: 1px solid var(--border); border-radius: 5px; color: var(--text-secondary); cursor: pointer;" id="tile-esri">🛰️ Satellite</button>
+                        <button onclick="switchTile('osm')"    style="padding: 4px 10px; font-size: 0.72rem; background: var(--bg-3); border: 1px solid var(--border); border-radius: 5px; color: var(--text-secondary); cursor: pointer;" id="tile-osm">🗺️ Street</button>
+                        <button onclick="switchTile('topo')"   style="padding: 4px 10px; font-size: 0.72rem; background: var(--bg-3); border: 1px solid var(--border); border-radius: 5px; color: var(--text-secondary); cursor: pointer;" id="tile-topo">🏔️ Topo</button>
+                    </div>
+                </div>
+                <div style="position: relative;">
+                    <div id="phoenixMap"></div>
+                    <div class="map-overlay-badge" id="mapCoordBadge">
+                        📍 ${lat.toFixed(4)}°, ${lon.toFixed(4)}°
+                    </div>
+                </div>
+            </div>
+
+            <!-- Incident Header -->
+            <div class="incident-header">
+                <div class="incident-banner">
+                    <div class="incident-fire-icon">🔥</div>
+                    <div class="incident-title-block">
+                        <div class="incident-label">New Incident — Feature 12</div>
+                        <div class="incident-class">${data.predicted_class}</div>
+                        <div class="incident-confidence">Classifier confidence: <span>${(conf * 100).toFixed(0)}%</span></div>
+                        <div class="incident-coords">${lat.toFixed(4)}°N, ${lon.toFixed(4)}°E</div>
+                    </div>
+                </div>
+                <div class="verdict-section">
+                    <div class="verdict-badge ${status}">
+                        ${verdictIcon(status)} ${status}
+                    </div>
+                    <div class="verdict-score-block">
+                        <div class="score-label">Confirmation Score</div>
+                        <div class="score-bar-wrap">
+                            <div class="score-bar-fill ${scoreClass(score)}" style="width: ${score}%;"></div>
+                        </div>
+                        <div class="score-number" style="color: var(--${scoreClass(score) === 'high' ? 'consistent' : scoreClass(score) === 'med' ? 'uncertain' : 'inconsistent'})">${score.toFixed(0)}/100</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Evidence / Reasons -->
+            <div class="evidence-section">
+                <div class="card-header">
+                    <span>📋</span>
+                    <span class="card-title">Evidence & Reasons</span>
+                </div>
+                <div class="reasons-list">
+                    ${reasonsHtml || '<div class="reason-item"><div class="reason-text" style="color: var(--text-muted)">No reasons available</div></div>'}
+                </div>
+            </div>
+
+            <!-- Facility + Metrics -->
+            <div class="card" style="overflow: hidden;">
+                <div class="card-header">
+                    <span>📊</span>
+                    <span class="card-title">Key Metrics</span>
+                </div>
+                <div class="metrics-grid">
+                    <div class="metric-cell">
+                        <div class="metric-icon">🏭</div>
+                        <div class="metric-value" style="font-size: 0.78rem; word-break: break-word;">${facs.length > 0 ? `${Math.round(facs[0].distance_m || 0)}m` : '—'}</div>
+                        <div class="metric-label">${facs.length > 0 ? (facs[0].name || 'Facility').split(' ').slice(0, 2).join(' ') : 'No Facility'}</div>
+                    </div>
+                    <div class="metric-cell">
+                        <div class="metric-icon">🏙️</div>
+                        <div class="metric-value">${parseFloat(lc.built_up || 0).toFixed(0)}%</div>
+                        <div class="metric-label">Built-up</div>
+                    </div>
+                    <div class="metric-cell">
+                        <div class="metric-icon">🌾</div>
+                        <div class="metric-value">${parseFloat(lc.cropland || 0).toFixed(0)}%</div>
+                        <div class="metric-label">Cropland</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Land Cover -->
+            <div class="evidence-section">
+                <div class="card-header">
+                    <span>🌍</span>
+                    <span class="card-title">Land Cover Distribution</span>
+                </div>
+                <div class="landcover-list">
+                    ${lcRows}
+                </div>
+            </div>
+
+            <!-- Satellite Info -->
+            <div class="card" style="overflow: hidden;">
+                <div class="card-header">
+                    <span>🛰️</span>
+                    <span class="card-title">Sentinel-2 Imagery</span>
+                </div>
+                <div class="satellite-info-grid">
+                    <div class="sat-info-cell">
+                        <div class="sat-info-label">Satellite</div>
+                        <div class="sat-info-value">Sentinel-2A/B</div>
+                    </div>
+                    <div class="sat-info-cell">
+                        <div class="sat-info-label">Acquisition Date</div>
+                        <div class="sat-info-value">${acqDate}</div>
+                    </div>
+                    <div class="sat-info-cell">
+                        <div class="sat-info-label">Cloud Coverage</div>
+                        <div class="sat-info-value">${cloudText}</div>
+                    </div>
+                    <div class="sat-info-cell">
+                        <div class="sat-info-label">Resolution</div>
+                        <div class="sat-info-value">10m</div>
+                    </div>
+                    ${data.image_url ? `
+                    <div class="sat-info-cell" style="grid-column: 1 / -1;">
+                        <div class="sat-info-label">Image Reference</div>
+                        <div class="sat-info-value mono">${imageRef}</div>
+                    </div>` : ''}
+                </div>
+                ${analysisTime ? `
+                <div class="analysis-time">
+                    ⏱ Analysis completed: ${analysisTime}
+                </div>` : ''}
+            </div>
+        `;
+    }
+
+    // ─── MAP LOGIC ─────────────────────────────────────────────
+    let _map = null;
+    let _marker = null;
+    let _pulseMarker = null;
+    let _currentTile = null;
+
+    const TILES = {
+        esri: {
+            url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            attr: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics',
+            maxZoom: 19,
+        },
+        osm: {
+            url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+            attr: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+            maxZoom: 19,
+        },
+        topo: {
+            url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+            attr: '&copy; OpenTopoMap',
+            maxZoom: 17,
+        },
+    };
+
+    function initOrUpdateMap(lat, lon, status) {
+        // If map already exists just move it
+        if (_map) {
+            _map.setView([lat, lon], 14);
+            if (_marker) _map.removeLayer(_marker);
+            if (_pulseMarker) _map.removeLayer(_pulseMarker);
+            addHotspotMarker(lat, lon, status);
+            return;
+        }
+
+        // Create new map
+        _map = L.map('phoenixMap', {
+            zoomControl: true,
+            attributionControl: true,
+        }).setView([lat, lon], 14);
+
+        // Default ESRI satellite tile
+        _currentTile = L.tileLayer(TILES.esri.url, {
+            attribution: TILES.esri.attr,
+            maxZoom: TILES.esri.maxZoom,
+        }).addTo(_map);
+
+        addHotspotMarker(lat, lon, status);
+
+        // Active tile button
+        highlightTileBtn('esri');
+    }
+
+    function addHotspotMarker(lat, lon, status) {
+        const colors = { CONSISTENT: '#30d158', INCONSISTENT: '#ff3b30', UNCERTAIN: '#ffd60a' };
+        const col = colors[status] || '#ff6b35';
+
+        // Pulsing circle
+        _pulseMarker = L.circle([lat, lon], {
+            radius: 400,
+            color: col,
+            fillColor: col,
+            fillOpacity: 0.15,
+            weight: 2,
+            dashArray: '6,4',
+        }).addTo(_map);
+
+        // SVG fire marker
+        const icon = L.divIcon({
+            className: '',
+            html: `<div style="
+                width: 36px; height: 36px;
+                background: rgba(10,12,16,0.9);
+                border: 2px solid ${col};
+                border-radius: 50%;
+                display: flex; align-items: center; justify-content: center;
+                font-size: 18px;
+                box-shadow: 0 0 16px ${col}60;
+                position: relative;
+            ">
+                🔥
+                <div style="
+                    position: absolute; inset: -6px;
+                    border-radius: 50%;
+                    border: 2px solid ${col};
+                    animation: ring-pulse 1.8s ease-out infinite;
+                    pointer-events: none;
+                "></div>
+            </div>`,
+            iconSize: [36, 36],
+            iconAnchor: [18, 18],
+        });
+
+        _marker = L.marker([lat, lon], { icon })
+            .addTo(_map)
+            .bindPopup(`
+                <div style="font-family: Inter, sans-serif; min-width: 160px;">
+                    <strong style="font-size: 0.9rem;">🔥 Fire Hotspot</strong><br>
+                    <span style="font-size: 0.78rem; color: #666;">${lat.toFixed(4)}°N, ${lon.toFixed(4)}°E</span><br><br>
+                    <span style="font-size: 0.82rem; font-weight: 600; color: ${col};">● ${status}</span>
+                </div>
+            `)
+            .openPopup();
+    }
+
+    function switchTile(name) {
+        if (!_map || !TILES[name]) return;
+        if (_currentTile) _map.removeLayer(_currentTile);
+        _currentTile = L.tileLayer(TILES[name].url, {
+            attribution: TILES[name].attr,
+            maxZoom: TILES[name].maxZoom,
+        }).addTo(_map);
+        _currentTile.bringToBack();
+        highlightTileBtn(name);
+    }
+
+    function highlightTileBtn(active) {
+        ['esri','osm','topo'].forEach(name => {
+            const btn = document.getElementById('tile-' + name);
+            if (!btn) return;
+            if (name === active) {
+                btn.style.background = 'rgba(255,107,53,0.15)';
+                btn.style.borderColor = 'rgba(255,107,53,0.4)';
+                btn.style.color = '#ff6b35';
+            } else {
+                btn.style.background = 'var(--bg-3)';
+                btn.style.borderColor = 'var(--border)';
+                btn.style.color = 'var(--text-secondary)';
+            }
+        });
+    }
+
+    // ─── INIT ──────────────────────────────────────────────────
+    // Init
+    document.addEventListener('DOMContentLoaded', () => {
+        const now = new Date();
+        const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000)
+            .toISOString().slice(0, 16);
+        document.getElementById('timestamp').value = local;
+    });
+</script>
+</body>
+</html>
